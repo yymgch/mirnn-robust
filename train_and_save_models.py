@@ -12,6 +12,8 @@ conditions by switching ``--condition``:
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,7 +42,7 @@ SEQUENCE_LENGTH = 10000
 WAVE_LENGTH = SEQUENCE_LENGTH
 N_EPOCHS = 100
 LEARNING_RATE = 0.001
-R2_THRESHOLD = 0.998
+R2_THRESHOLD = 0.997
 TRAIN_DATA_IDS = np.arange(1, 101)
 EVAL_DATA_ID = 102
 
@@ -335,6 +337,34 @@ def save_outputs(output_dir, model_id, model, histories):
     model.save_weights(str(output_dir / f"model_{model_id}"))
 
 
+def write_acceptance_logs(output_dir, log_name, records, summary):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / f"{log_name}.csv"
+    json_path = output_dir / f"{log_name}_summary.json"
+
+    fieldnames = [
+        "attempt",
+        "model_id",
+        "condition",
+        "accepted",
+        "mean_r2",
+        "reason",
+        "epochs",
+        "learning_rate",
+        "r2_threshold",
+    ]
+    with csv_path.open("w", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(records)
+
+    with json_path.open("w") as file:
+        json.dump(summary, file, indent=2)
+
+    print(f"Saved acceptance log: {csv_path}")
+    print(f"Saved acceptance summary: {json_path}")
+
+
 # ================================
 # Training
 # ================================
@@ -424,29 +454,74 @@ def train_until_accepted(args):
     condition = CONDITIONS[args.condition]
     accepted = 0
     attempts = 0
+    rejected_nonfinite = 0
+    rejected_r2 = 0
+    records = []
+    log_name = args.acceptance_log_name or (
+        f"training_acceptance_log_{args.condition}_{args.start_index}"
+    )
 
-    while accepted < args.num_models and attempts < args.max_attempts:
-        attempts += 1
-        model_id = f"{condition.id_prefix}{args.start_index + accepted}"
-        print(f"\n=== attempt {attempts}: target model_{model_id} ===")
+    try:
+        while accepted < args.num_models and attempts < args.max_attempts:
+            attempts += 1
+            model_id = f"{condition.id_prefix}{args.start_index + accepted}"
+            print(f"\n=== attempt {attempts}: target model_{model_id} ===")
 
-        model, histories, failed_reason = train_one_model(condition, args.epochs, args.learning_rate)
-        if failed_reason is not None:
-            print(f"rejected model_{model_id}: {failed_reason}")
-            continue
+            record = {
+                "attempt": attempts,
+                "model_id": f"model_{model_id}",
+                "condition": args.condition,
+                "accepted": False,
+                "mean_r2": "",
+                "reason": "",
+                "epochs": args.epochs,
+                "learning_rate": args.learning_rate,
+                "r2_threshold": args.r2_threshold,
+            }
 
-        mean_r2 = evaluate_r2(model)
-        if np.isfinite(mean_r2):
-            print(f"validation mean R2: {mean_r2:.6f}")
-        else:
-            print("validation mean R2: nan")
+            model, histories, failed_reason = train_one_model(condition, args.epochs, args.learning_rate)
+            if failed_reason is not None:
+                rejected_nonfinite += 1
+                record["reason"] = failed_reason
+                records.append(record)
+                print(f"rejected model_{model_id}: {failed_reason}")
+                continue
 
-        if np.isfinite(mean_r2) and mean_r2 > args.r2_threshold:
-            save_outputs(args.output_dir, model_id, model, histories)
-            accepted += 1
-            print(f"accepted and saved model_{model_id}")
-        else:
-            print(f"rejected model_{model_id}: R2 <= {args.r2_threshold}")
+            mean_r2 = evaluate_r2(model)
+            if np.isfinite(mean_r2):
+                record["mean_r2"] = f"{mean_r2:.10g}"
+                print(f"validation mean R2: {mean_r2:.6f}")
+            else:
+                record["mean_r2"] = "nan"
+                print("validation mean R2: nan")
+
+            if np.isfinite(mean_r2) and mean_r2 > args.r2_threshold:
+                save_outputs(args.output_dir, model_id, model, histories)
+                accepted += 1
+                record["accepted"] = True
+                record["reason"] = "accepted"
+                print(f"accepted and saved model_{model_id}")
+            else:
+                rejected_r2 += 1
+                record["reason"] = f"R2 <= {args.r2_threshold}"
+                print(f"rejected model_{model_id}: R2 <= {args.r2_threshold}")
+            records.append(record)
+    finally:
+        summary = {
+            "condition": args.condition,
+            "requested_models": args.num_models,
+            "accepted": accepted,
+            "attempts": attempts,
+            "max_attempts": args.max_attempts,
+            "acceptance_rate": accepted / attempts if attempts else 0.0,
+            "rejected_nonfinite": rejected_nonfinite,
+            "rejected_r2": rejected_r2,
+            "r2_threshold": args.r2_threshold,
+            "epochs": args.epochs,
+            "learning_rate": args.learning_rate,
+            "start_index": args.start_index,
+        }
+        write_acceptance_logs(args.output_dir, log_name, records, summary)
 
     if accepted < args.num_models:
         raise RuntimeError(f"accepted {accepted}/{args.num_models} models after {attempts} attempts")
@@ -462,6 +537,11 @@ def parse_args():
     parser.add_argument("--learning-rate", type=float, default=LEARNING_RATE)
     parser.add_argument("--r2-threshold", type=float, default=R2_THRESHOLD)
     parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
+    parser.add_argument(
+        "--acceptance-log-name",
+        default=None,
+        help="Base filename for acceptance CSV and summary JSON logs.",
+    )
     return parser.parse_args()
 
 

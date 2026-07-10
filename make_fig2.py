@@ -143,6 +143,10 @@ from pylab import rcParams
 rcParams['figure.figsize'] = 8,8
 rcParams['font.size'] = 20
 rcParams['figure.dpi'] = 300
+# Embed TrueType (Type 42) fonts rather than Type 3 in PDF/EPS output, so the
+# figures print and embed correctly (Type 3 fonts can fail on some devices).
+rcParams['pdf.fonttype'] = 42
+rcParams['ps.fonttype'] = 42
 color_map = 'cividis'
 
 middle_layer_a = tf.transpose(middle_layer_a, perm=[0, 2, 1])

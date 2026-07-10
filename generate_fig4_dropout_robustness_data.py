@@ -6,6 +6,7 @@ This script reproduces the saved pickle files consumed by
 plot_dropout_robustness_from_saved.py.
 """
 from pathlib import Path
+import json
 import pickle
 import time
 
@@ -146,7 +147,8 @@ def generate_common_dropout_masks(hidden_dim, max_k, n_trials, region, seed):
     else:
         raise ValueError("region must be front or back")
 
-    all_masks = []
+    # Index 0 corresponds to k=0 (no ablation, baseline): a single empty mask.
+    all_masks = [[np.array([], dtype=int)]]
     for k in range(1, max_k + 1):
         trial_masks = []
         for _ in range(n_trials):
@@ -215,6 +217,10 @@ def evaluate_model_group(model_ids, dropout_masks, x_val, y_val, drop_region, ou
         print("done")
 
     print(f"Elapsed: {time.time() - start_time:.2f} sec")
+    if not scores_by_model:
+        # No models in this orientation group: return a correctly shaped empty
+        # array (0, n_k) so it concatenates with the other orientation.
+        return np.empty((0, len(dropout_masks)))
     return np.asarray(scores_by_model)
 
 
@@ -225,7 +231,10 @@ def summarize_by_suffix(results_by_group, suffixes):
             [results_by_group[f"backslash{suffix}"], results_by_group[f"slash{suffix}"]],
             axis=0,
         )
-        combined[suffix] = (np.mean(data, axis=0), np.std(data, axis=0))
+        # Store the full per-model matrix (n_models, n_k) so downstream analyses
+        # (mean, 95% CI, primary-vs-non-primary gap, interaction tests) can be
+        # computed. Column index 0 is k=0 (no ablation, baseline).
+        combined[suffix] = data
     return combined
 
 
@@ -270,8 +279,25 @@ def save_pickle(path, value):
 # ================================
 # Main
 # ================================
+# Orientation assignment produced by determine_orientations.py. When present it
+# replaces the hardcoded BACKSLASH_*/SLASH_* lists, so the ablation analysis runs
+# on the freshly selected and oriented models (Reviewer 1, point 2 / point 4).
+ORIENTATION_JSON = Path("model_orientations.json")
+
+
 def main():
+    global GROUPS, SUFFIXES_TO_EVALUATE
     configure_gpu_memory_growth()
+
+    if ORIENTATION_JSON.exists():
+        GROUPS = json.loads(ORIENTATION_JSON.read_text())
+        suffixes = sorted({key.split("_", 1)[1] for key in GROUPS}, key=lambda s: ("_" + s))
+        SUFFIXES_TO_EVALUATE = ["_" + s for s in suffixes]
+        print(f"Using orientations from {ORIENTATION_JSON}: "
+              f"{sum(len(v) for v in GROUPS.values())} models, suffixes={SUFFIXES_TO_EVALUATE}")
+    else:
+        print(f"{ORIENTATION_JSON} not found; using built-in BACKSLASH_*/SLASH_* lists")
+
     x_val, y_val = load_evaluation_data()
     print(f"Evaluation data: x={x_val.shape}, y={y_val.shape}")
 

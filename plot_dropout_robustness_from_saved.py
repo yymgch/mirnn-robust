@@ -4,6 +4,7 @@ import pickle
 
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.stats import t
 
 
 # %%
@@ -82,8 +83,19 @@ plt.rcParams.update(
 )
 
 
+def mean_ci(data, confidence=0.95):
+    """Across-model mean and t-based 95% CI half-width per column (matches Fig. 3)."""
+    data = np.asarray(data, dtype=float)
+    n = data.shape[0]
+    mean = data.mean(axis=0)
+    sem = data.std(axis=0, ddof=1) / np.sqrt(n)
+    half_width = sem * t.ppf((1 + confidence) / 2, n - 1)
+    return mean, half_width
+
+
 def plot_panel(ax, mine_primary, mine_nonprimary, l2_primary, l2_nonprimary, title):
-    ks = np.arange(1, len(mine_primary[0]) + 1)
+    # Each curve is a per-model matrix of shape (n_models, n_k) with column 0 = k=0.
+    ks = np.arange(0, np.asarray(mine_primary).shape[1])
     curves = [
         ("MINE+L2 primary ablated", mine_primary, "#007385db", "o", "-"),
         ("MINE+L2 non-primary ablated", mine_nonprimary, "#059c0d", "s", "-"),
@@ -92,9 +104,7 @@ def plot_panel(ax, mine_primary, mine_nonprimary, l2_primary, l2_nonprimary, tit
     ]
 
     for label, curve, color, marker, linestyle in curves:
-        mean, sd = curve[:2]
-        mean = np.asarray(mean)
-        sd = np.asarray(sd)
+        mean, half_width = mean_ci(curve)
         ax.plot(
             ks,
             mean,
@@ -105,7 +115,9 @@ def plot_panel(ax, mine_primary, mine_nonprimary, l2_primary, l2_nonprimary, tit
             markersize=4,
             label=label,
         )
-        ax.fill_between(ks, mean - sd, mean + sd, color=color, alpha=0.16, linewidth=0)
+        ax.fill_between(
+            ks, mean - half_width, mean + half_width, color=color, alpha=0.16, linewidth=0
+        )
 
     ax.set_title(title)
     ax.set_xlabel("Number of ablated units")

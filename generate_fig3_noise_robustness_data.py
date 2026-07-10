@@ -34,6 +34,23 @@ STRICT_WEIGHTS = False
 # Set this to None to match that stochastic style, or to an integer for reruns.
 RANDOM_SEED = 0
 
+# Accepted-model selection produced by select_accepted_models.py. When this file
+# is present it is the source of truth for which models enter the noise
+# experiment (Reviewer 1, point 2: analysis runs on the R^2-selected models).
+# The hardcoded lists below remain only as a legacy fallback for environments
+# without a selection file (e.g. the smoke test, which overrides GROUPS directly).
+SELECTION_JSON = Path("accepted_models.json")
+
+# condition key in accepted_models.json -> (group name, output file).
+# The three conditions match the manuscript: MI+L2, L2-only, and unregularized
+# (plain = no MINE, no L2). The "no regularization" output file is therefore
+# populated by the plain condition.
+CONDITION_TO_GROUP = {
+    "mine_l2": ("MI+L2", "ketteikeisu3_MINEあり.npy"),
+    "l2_only": ("L2 only", "ketteikeisu3_MINEなし.npy"),
+    "plain": ("unregularized", "ketteikeisu3_正則化なし.npy"),
+}
+
 MINE_L2_MODEL_IDS = [
     "10", "12", "13", "15", "16", "17", "22", "24", "25", "26",
     "28", "29", "30", "31", "32", "33", "34", "44", "45", "46", "47",
@@ -65,6 +82,20 @@ GROUPS = [
         "output_file": "ketteikeisu3_MINEなし.npy",
     },
 ]
+
+
+def groups_from_selection(json_path):
+    """Build the GROUPS list from accepted_models.json (select_accepted_models.py)."""
+    import json
+    selection = json.loads(Path(json_path).read_text())
+    groups = []
+    for cond, (name, output_file) in CONDITION_TO_GROUP.items():
+        ids = selection.get(cond, [])
+        if ids:
+            groups.append({"name": name, "model_ids": ids, "output_file": output_file})
+        else:
+            print(f"  warning: no accepted models for condition '{cond}'; skipping")
+    return groups
 
 
 # ================================
@@ -177,12 +208,23 @@ def main():
     rng = np.random.default_rng(RANDOM_SEED)
     x_val, y_val = load_evaluation_data()
 
+    # Prefer the accepted-model selection when available; otherwise fall back to
+    # the module-level GROUPS (legacy hardcoded lists or a test override).
+    groups = GROUPS
+    if SELECTION_JSON.exists():
+        groups = groups_from_selection(SELECTION_JSON)
+        print(f"Using accepted models from {SELECTION_JSON} "
+              f"({sum(len(g['model_ids']) for g in groups)} models across {len(groups)} conditions)")
+    else:
+        print(f"{SELECTION_JSON} not found; using module-level GROUPS "
+              f"({sum(len(g['model_ids']) for g in groups)} models)")
+
     print(f"Evaluation data: x={x_val.shape}, y={y_val.shape}")
     print(f"Noise levels: {len(NOISE_LEVELS)} from {NOISE_LEVELS[0]:.2f} to {NOISE_LEVELS[-1]:.2f}")
     print(f"Noise trials per model per level: {NOISE_TRIALS}")
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    for group in GROUPS:
+    for group in groups:
         results = evaluate_group(group, x_val, y_val, rng)
         output_path = OUTPUT_DIR / group["output_file"]
         np.save(output_path, results)
